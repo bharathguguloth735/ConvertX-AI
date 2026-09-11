@@ -25,8 +25,67 @@ from app.services.social.social_service import social_service, TEMP_SOCIAL_DIR
 
 router = APIRouter(prefix="/api/social", tags=["Social Media Tools"])
 
-# In-memory store for analyzed items before download selection
-ANALYZED_ITEMS_CACHE: Dict[str, Dict] = {}
+import json
+import time
+from typing import Dict, Optional, Tuple, Any
+from app.services.social.provider_base import MediaOption
+from app.security.rate_limiter import _get_redis_client
+
+# Clustered cache: Redis with in-memory fallback and TTL cleanup
+_IN_MEMORY_SOCIAL_CACHE: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+
+
+async def save_analyzed_item(item_id: str, item_data: dict, ttl_seconds: int = 900) -> None:
+    """Cache analyzed media item in Redis (if available) with in-memory fallback."""
+    serializable = dict(item_data)
+    if "options" in serializable and serializable["options"]:
+        serializable["options"] = [
+            opt if isinstance(opt, dict) else {
+                "id": getattr(opt, "id", ""),
+                "label": getattr(opt, "label", ""),
+                "format": getattr(opt, "format", ""),
+                "quality": getattr(opt, "quality", ""),
+                "media_type": getattr(opt, "media_type", ""),
+                "download_url": getattr(opt, "download_url", None),
+                "file_size_approx": getattr(opt, "file_size_approx", None),
+                "downloadable": getattr(opt, "downloadable", True),
+            }
+            for opt in serializable["options"]
+        ]
+
+    client = _get_redis_client()
+    if client:
+        try:
+            await client.set(f"social:item:{item_id}", json.dumps(serializable), ex=ttl_seconds)
+            return
+        except Exception:
+            pass
+
+    now = time.time()
+    expired = [k for k, (exp, _) in _IN_MEMORY_SOCIAL_CACHE.items() if exp < now]
+    for k in expired:
+        _IN_MEMORY_SOCIAL_CACHE.pop(k, None)
+    _IN_MEMORY_SOCIAL_CACHE[item_id] = (now + ttl_seconds, serializable)
+
+
+async def get_analyzed_item(item_id: str) -> Optional[dict]:
+    """Retrieve analyzed media item from Redis or in-memory fallback."""
+    client = _get_redis_client()
+    if client:
+        try:
+            raw = await client.get(f"social:item:{item_id}")
+            if raw:
+                return json.loads(raw)
+        except Exception:
+            pass
+
+    now = time.time()
+    if item_id in _IN_MEMORY_SOCIAL_CACHE:
+        exp, data = _IN_MEMORY_SOCIAL_CACHE[item_id]
+        if exp > now:
+            return data
+        _IN_MEMORY_SOCIAL_CACHE.pop(item_id, None)
+    return None
 
 
 @router.post("/validate", response_model=ValidateURLResponse, dependencies=[Depends(social_rate_limiter)])
@@ -88,7 +147,7 @@ async def analyze_social_url(data: AnalyzeURLRequest):
         }
 
         # Cache item for download phase
-        ANALYZED_ITEMS_CACHE[item_id] = item_data
+        await save_analyzed_item(item_id, item_data)
 
         return AnalyzeURLResponse(
             id=item_id,
@@ -140,25 +199,40 @@ async def get_analyzed_media(id: str):
     """
     Get metadata & options for an analyzed media item by ID.
     """
-    item = ANALYZED_ITEMS_CACHE.get(id)
+    item = await get_analyzed_item(id)
     if not item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Media session expired or not found. Please analyze the URL again.",
         )
 
-    options_schema = [
-        MediaOptionSchema(
-            id=opt.id,
-            label=opt.label,
-            format=opt.format,
-            quality=opt.quality,
-            media_type=opt.media_type,
-            file_size_approx=opt.file_size_approx,
-            downloadable=opt.downloadable,
-        )
-        for opt in item["options"]
-    ]
+    raw_options = item.get("options", [])
+    options_schema = []
+    for opt in raw_options:
+        if isinstance(opt, dict):
+            options_schema.append(
+                MediaOptionSchema(
+                    id=opt.get("id", ""),
+                    label=opt.get("label", ""),
+                    format=opt.get("format", ""),
+                    quality=opt.get("quality", ""),
+                    media_type=opt.get("media_type", "video"),
+                    file_size_approx=opt.get("file_size_approx"),
+                    downloadable=opt.get("downloadable", True),
+                )
+            )
+        else:
+            options_schema.append(
+                MediaOptionSchema(
+                    id=opt.id,
+                    label=opt.label,
+                    format=opt.format,
+                    quality=opt.quality,
+                    media_type=opt.media_type,
+                    file_size_approx=opt.file_size_approx,
+                    downloadable=opt.downloadable,
+                )
+            )
 
     return AnalyzeURLResponse(
         id=item["id"],
@@ -186,7 +260,7 @@ async def download_social_media(
     Download user-selected option of permitted public media.
     Creates DB record in social_media_downloads and returns file link.
     """
-    item = ANALYZED_ITEMS_CACHE.get(data.media_id)
+    item = await get_analyzed_item(data.media_id)
     if not item:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

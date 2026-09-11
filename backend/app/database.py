@@ -45,13 +45,30 @@ async def get_db() -> AsyncSession:
 
 
 async def create_tables():
-    """Create all database tables (used in startup)."""
+    """Create all database tables (used in startup) and ensure schema compatibility."""
+    from sqlalchemy import text
     async with engine.begin() as conn:
         if "postgresql" in settings.database_url:
             await conn.execute(
-                __import__("sqlalchemy").text("CREATE EXTENSION IF NOT EXISTS vector")
+                text("CREATE EXTENSION IF NOT EXISTS vector")
             )
+        import app.models  # Ensure all models are registered
         await conn.run_sync(Base.metadata.create_all)
+
+        # Reconcile columns on existing SQLite/Postgres tables
+        migrations = [
+            "ALTER TABLE jobs ADD COLUMN celery_task_id VARCHAR(255)",
+            "ALTER TABLE jobs ADD COLUMN started_at DATETIME",
+            "ALTER TABLE jobs ADD COLUMN processing_time_ms INTEGER",
+            "ALTER TABLE document_chunks ADD COLUMN embedding_json TEXT",
+            "ALTER TABLE ocr_results ADD COLUMN page_count INTEGER DEFAULT 1",
+            "ALTER TABLE ocr_results ADD COLUMN page_texts TEXT",
+        ]
+        for sql in migrations:
+            try:
+                await conn.execute(text(sql))
+            except Exception:
+                pass
 
 
 async def seed_initial_data():

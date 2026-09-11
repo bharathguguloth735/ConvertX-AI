@@ -4,8 +4,9 @@ Supports direct processing (small files) and background jobs (large files).
 """
 import uuid
 import time
+import json
 from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
@@ -14,8 +15,10 @@ from app.models import User, ProcessingJob, JobStatus, File as FileModel, FileSt
 from app.security.dependencies import get_current_user, get_current_user_or_guest
 from app.services.storage.storage_service import storage, generate_storage_path
 from app.services.pdf.pdf_service import PDFService
+from app.services.pdf.pii_redaction_service import PIIRedactionService
 from app.security.file_validation import detect_mime_type, sanitize_filename
 from app.workers.pdf_tasks import pdf_convert_task
+from app.utils.task_dispatcher import dispatch_background_job
 from app.config import settings
 
 router = APIRouter(prefix="/api/pdf", tags=["PDF Tools"])
@@ -86,6 +89,7 @@ def _parse_page_ranges(pages_str: str) -> List[int]:
 
 @router.post("/convert")
 async def convert_pdf(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     operation: str = Form(...),
     current_user: User = Depends(get_current_user_or_guest),
@@ -164,14 +168,16 @@ async def convert_pdf(
         except Exception as e:
             raise HTTPException(500, f"Processing failed: {str(e)[:200]}")
 
-    # Large files: use background job
+    # Large files: use background job with resilient Celery/in-process fallback
     job = await _create_job(db, current_user.id, operation, db_file.id, {
         "operation": operation,
         "storage_path": db_file.storage_path,
         "original_filename": db_file.original_filename,
     })
-    task = pdf_convert_task.delay(job.id, db_file.storage_path, current_user.id, job.options)
-    job.celery_task_id = task.id
+    task_id = await dispatch_background_job(
+        job.id, pdf_convert_task, background_tasks, db_file.storage_path, current_user.id, job.options
+    )
+    job.celery_task_id = task_id
     await db.flush()
 
     return {"status": "processing", "job_id": job.id}
@@ -650,3 +656,237 @@ async def get_pdf_info(
         return meta
     except Exception as e:
         raise HTTPException(500, f"Could not read PDF metadata: {str(e)[:200]}")
+
+
+@router.post("/render-preview")
+async def render_pdf_preview(
+    file: Optional[UploadFile] = File(None),
+    file_id: Optional[str] = Form(None),
+    dpi: int = Form(150),
+    max_pages: int = Form(25),
+    current_user: User = Depends(get_current_user_or_guest),
+    db: AsyncSession = Depends(get_db),
+):
+    """Render PDF pages as high-resolution PNG images for canvas interaction."""
+    file_bytes = b""
+    filename = "document.pdf"
+    target_file_id = file_id
+
+    if file:
+        file_bytes = await file.read()
+        filename = sanitize_filename(file.filename or "preview.pdf")
+        path = generate_storage_path(current_user.id, filename, "previews")
+        await storage.upload(file_bytes, path, "application/pdf")
+        db_file = FileModel(
+            id=str(uuid.uuid4()), user_id=current_user.id,
+            original_filename=filename, stored_filename=filename,
+            storage_path=path, mime_type="application/pdf",
+            file_size=len(file_bytes), file_extension=".pdf",
+            status=FileStatus.COMPLETED, tool_type="render_preview",
+            category=ToolCategory.PDF,
+        )
+        db.add(db_file)
+        await db.flush()
+        target_file_id = db_file.id
+    elif file_id:
+        result = await db.execute(select(FileModel).where(FileModel.id == file_id))
+        f = result.scalar_one_or_none()
+        if not f:
+            raise HTTPException(404, "File not found")
+        file_bytes = await storage.download(f.storage_path)
+        filename = f.original_filename
+    else:
+        raise HTTPException(400, "Either file or file_id must be provided")
+
+    try:
+        pages = PDFService.render_pdf_pages_as_images(file_bytes, dpi=dpi, max_pages=max_pages)
+        return {
+            "file_id": target_file_id,
+            "filename": filename,
+            "page_count": len(pages),
+            "pages": pages,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Failed to render PDF preview: {str(e)[:200]}")
+
+
+@router.post("/sign-and-fill")
+async def sign_and_fill_pdf(
+    file: Optional[UploadFile] = File(None),
+    file_id: Optional[str] = Form(None),
+    elements_json: str = Form(...),
+    signer_name: Optional[str] = Form(None),
+    signer_email: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user_or_guest),
+    db: AsyncSession = Depends(get_db),
+):
+    """Stamp digital signatures, text, dates, and checkboxes, then flatten PDF."""
+    file_bytes = b""
+    original_name = "signed_document.pdf"
+
+    if file:
+        file_bytes = await file.read()
+        original_name = sanitize_filename(file.filename or "document.pdf")
+    elif file_id:
+        result = await db.execute(select(FileModel).where(FileModel.id == file_id))
+        f = result.scalar_one_or_none()
+        if not f:
+            raise HTTPException(404, "File not found")
+        file_bytes = await storage.download(f.storage_path)
+        original_name = f.original_filename
+    else:
+        raise HTTPException(400, "Either file or file_id must be provided")
+
+    try:
+        elements = json.loads(elements_json)
+    except Exception:
+        raise HTTPException(400, "Invalid elements_json payload")
+
+    try:
+        signer_info = {
+            "name": signer_name or (current_user.full_name if hasattr(current_user, "full_name") and current_user.full_name else current_user.email),
+            "email": signer_email or current_user.email,
+            "timestamp": time.strftime("%Y-%m-%d %H:%M:%S UTC", time.gmtime()),
+        }
+        signed_pdf = PDFService.apply_signatures_and_form_fields(file_bytes, elements, signer_info)
+        base = original_name.rsplit(".", 1)[0]
+        out_name = f"{base}_signed.pdf"
+        out_path = generate_storage_path(current_user.id, out_name, "outputs")
+        await storage.upload(signed_pdf, out_path, "application/pdf")
+
+        out_file = FileModel(
+            id=str(uuid.uuid4()), user_id=current_user.id,
+            original_filename=out_name, stored_filename=out_name,
+            storage_path=out_path, mime_type="application/pdf",
+            file_size=len(signed_pdf), file_extension=".pdf",
+            status=FileStatus.COMPLETED, tool_type="sign",
+            category=ToolCategory.PDF, is_output=True,
+        )
+        db.add(out_file)
+        await db.flush()
+
+        return {
+            "status": "completed",
+            "output_file_id": out_file.id,
+            "filename": out_name,
+            "download_url": storage.get_url(out_file.id, out_name),
+            "size": len(signed_pdf),
+            "pages": PDFService.get_page_count(signed_pdf),
+            "elements_applied": len(elements),
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Failed to sign PDF: {str(e)[:200]}")
+
+
+@router.post("/scan-pii")
+async def scan_pdf_pii(
+    file: Optional[UploadFile] = File(None),
+    file_id: Optional[str] = Form(None),
+    current_user: User = Depends(get_current_user_or_guest),
+    db: AsyncSession = Depends(get_db),
+):
+    """Scan PDF for sensitive PII entities (Emails, Phones, Credit Cards, Aadhaar, SSN, PAN)."""
+    file_bytes = b""
+    filename = "document.pdf"
+    target_file_id = file_id
+
+    if file:
+        file_bytes = await file.read()
+        filename = sanitize_filename(file.filename or "scan.pdf")
+        path = generate_storage_path(current_user.id, filename, "redact_sources")
+        await storage.upload(file_bytes, path, "application/pdf")
+        db_file = FileModel(
+            id=str(uuid.uuid4()), user_id=current_user.id,
+            original_filename=filename, stored_filename=filename,
+            storage_path=path, mime_type="application/pdf",
+            file_size=len(file_bytes), file_extension=".pdf",
+            status=FileStatus.COMPLETED, tool_type="scan_pii",
+            category=ToolCategory.PDF,
+        )
+        db.add(db_file)
+        await db.flush()
+        target_file_id = db_file.id
+    elif file_id:
+        result = await db.execute(select(FileModel).where(FileModel.id == file_id))
+        f = result.scalar_one_or_none()
+        if not f:
+            raise HTTPException(404, "File not found")
+        file_bytes = await storage.download(f.storage_path)
+        filename = f.original_filename
+    else:
+        raise HTTPException(400, "Either file or file_id must be provided")
+
+    try:
+        detected = PIIRedactionService.scan_pdf_for_pii(file_bytes)
+        return {
+            "file_id": target_file_id,
+            "filename": filename,
+            "total_entities_found": len(detected),
+            "entities": detected,
+        }
+    except Exception as e:
+        raise HTTPException(500, f"PII scan failed: {str(e)[:200]}")
+
+
+@router.post("/apply-redactions")
+async def apply_pdf_redactions(
+    file: Optional[UploadFile] = File(None),
+    file_id: Optional[str] = Form(None),
+    redactions_json: str = Form(...),
+    strip_metadata: bool = Form(True),
+    current_user: User = Depends(get_current_user_or_guest),
+    db: AsyncSession = Depends(get_db),
+):
+    """Burn opaque black boxes and permanently purge underlying text/vectors."""
+    file_bytes = b""
+    original_name = "redacted_document.pdf"
+
+    if file:
+        file_bytes = await file.read()
+        original_name = sanitize_filename(file.filename or "document.pdf")
+    elif file_id:
+        result = await db.execute(select(FileModel).where(FileModel.id == file_id))
+        f = result.scalar_one_or_none()
+        if not f:
+            raise HTTPException(404, "File not found")
+        file_bytes = await storage.download(f.storage_path)
+        original_name = f.original_filename
+    else:
+        raise HTTPException(400, "Either file or file_id must be provided")
+
+    try:
+        redaction_items = json.loads(redactions_json)
+    except Exception:
+        raise HTTPException(400, "Invalid redactions_json payload")
+
+    try:
+        redacted_pdf = PIIRedactionService.apply_redactions(
+            file_bytes, redaction_items, strip_metadata=strip_metadata
+        )
+        base = original_name.rsplit(".", 1)[0]
+        out_name = f"{base}_redacted.pdf"
+        out_path = generate_storage_path(current_user.id, out_name, "outputs")
+        await storage.upload(redacted_pdf, out_path, "application/pdf")
+
+        out_file = FileModel(
+            id=str(uuid.uuid4()), user_id=current_user.id,
+            original_filename=out_name, stored_filename=out_name,
+            storage_path=out_path, mime_type="application/pdf",
+            file_size=len(redacted_pdf), file_extension=".pdf",
+            status=FileStatus.COMPLETED, tool_type="redact",
+            category=ToolCategory.PDF, is_output=True,
+        )
+        db.add(out_file)
+        await db.flush()
+
+        return {
+            "status": "completed",
+            "output_file_id": out_file.id,
+            "filename": out_name,
+            "download_url": storage.get_url(out_file.id, out_name),
+            "size": len(redacted_pdf),
+            "redactions_burned": len(redaction_items),
+        }
+    except Exception as e:
+        raise HTTPException(500, f"Redaction failed: {str(e)[:200]}")
+

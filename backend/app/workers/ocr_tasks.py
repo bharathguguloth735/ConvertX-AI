@@ -6,14 +6,14 @@ def ocr_process_task(self, job_id: str, input_path: str, user_id: str, file_id: 
     from app.workers.pdf_tasks import _get_sync_db, _update_job
     from app.services.ocr.ocr_service import OCRService
     from app.models import OCRResult
-    from app.config import settings
+    from app.services.storage.storage_service import storage
     import uuid
+    import json
 
     db = _get_sync_db()
     try:
         _update_job(db, job_id, "processing", 10)
-        with open(f"{settings.storage_local_path}/{input_path}", "rb") as f:
-            file_bytes = f.read()
+        file_bytes = storage.download_sync(input_path)
 
         language = options.get("language", "en")
         file_ext = options.get("file_ext", "pdf").lower()
@@ -29,6 +29,9 @@ def ocr_process_task(self, job_id: str, input_path: str, user_id: str, file_id: 
 
         _update_job(db, job_id, "processing", 80)
 
+        pages_data = result.get("pages")
+        pages_str = json.dumps(pages_data) if pages_data is not None else None
+
         # Save OCR result to DB
         ocr = OCRResult(
             id=str(uuid.uuid4()),
@@ -38,7 +41,7 @@ def ocr_process_task(self, job_id: str, input_path: str, user_id: str, file_id: 
             confidence=result.get("confidence"),
             language=language,
             page_count=result.get("page_count", 1),
-            page_texts=result.get("pages"),
+            page_texts=pages_str,
         )
         db.add(ocr)
         db.commit()

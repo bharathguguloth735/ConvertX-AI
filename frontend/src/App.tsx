@@ -45,6 +45,10 @@ const PDFWatermarkTool = React.lazy(() => import('@/tools/FileToolPage').then(m 
 const PDFMergerTool = React.lazy(() => import('@/tools/PDFMergerTool'));
 const ImagesToPDFTool = React.lazy(() => import('@/tools/ImagesToPDFTool'));
 
+const PDFSignatureStudioPage = React.lazy(() => import('@/tools/PDFSignatureStudioPage').then(m => ({ default: m.PDFSignatureStudioPage })));
+const PDFRedactStudioPage = React.lazy(() => import('@/tools/PDFRedactStudioPage').then(m => ({ default: m.PDFRedactStudioPage })));
+const BatchConverterPage = React.lazy(() => import('@/tools/BatchConverterPage').then(m => ({ default: m.BatchConverterPage })));
+
 const InvoiceAIPage = React.lazy(() => import('@/pages/AIToolsPages').then(m => ({ default: m.InvoiceAIPage })));
 const ResumeAIPage = React.lazy(() => import('@/pages/AIToolsPages').then(m => ({ default: m.ResumeAIPage })));
 const AITranslatorPage = React.lazy(() => import('@/pages/AIToolsPages').then(m => ({ default: m.AITranslatorPage })));
@@ -148,6 +152,10 @@ const App: React.FC = () => {
               <Route path="/tools" element={<Suspense fallback={<PageLoader />}><AllToolsPage /></Suspense>} />
               
               {/* PDF Tools */}
+              <Route path="/tools/pdf/sign" element={<PDFSignatureStudioPage />} />
+              <Route path="/tools/pdf/redact" element={<PDFRedactStudioPage />} />
+              <Route path="/tools/batch-converter" element={<BatchConverterPage />} />
+              <Route path="/batch-converter" element={<BatchConverterPage />} />
               <Route path="/tools/pdf/convert" element={<PDFConvertWrapper />} />
               <Route path="/tools/pdf/compress" element={<PDFCompressTool />} />
               <Route path="/tools/pdf/merge" element={<PDFMergerTool />} />

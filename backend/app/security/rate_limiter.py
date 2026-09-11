@@ -4,8 +4,9 @@ Supports Redis sliding-window with automatic in-memory fallback.
 """
 import time
 import logging
+import ipaddress
 from collections import defaultdict
-from typing import Optional
+from typing import Optional, List
 from fastapi import Request, HTTPException, status
 from app.config import settings
 
@@ -13,6 +14,48 @@ logger = logging.getLogger("docuflow.ratelimit")
 
 _redis_client = None
 _redis_attempted = False
+
+# Private and local subnet ranges for trusted reverse proxies (Docker / Nginx / Load Balancer)
+TRUSTED_PROXY_NETWORKS: List[ipaddress.IPv4Network | ipaddress.IPv6Network] = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("fc00::/7"),
+]
+
+
+def is_trusted_proxy(ip_str: str) -> bool:
+    """Verify if direct incoming connection is from a trusted reverse proxy."""
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        return any(ip in net for net in TRUSTED_PROXY_NETWORKS)
+    except ValueError:
+        return False
+
+
+def extract_client_ip(request: Request) -> str:
+    """
+    Safely extract client IP address.
+    Only trusts X-Forwarded-For or CF-Connecting-IP if the direct client is a trusted proxy.
+    """
+    direct_host = request.client.host if request.client else "unknown"
+
+    if is_trusted_proxy(direct_host):
+        cf_ip = request.headers.get("CF-Connecting-IP")
+        if cf_ip and cf_ip.strip():
+            return cf_ip.strip()
+        forwarded = request.headers.get("X-Forwarded-For")
+        if forwarded:
+            ips = [ip.strip() for ip in forwarded.split(",") if ip.strip()]
+            if ips:
+                return ips[0]
+        real_ip = request.headers.get("X-Real-IP")
+        if real_ip and real_ip.strip():
+            return real_ip.strip()
+
+    return direct_host
 
 
 def _get_redis_client():
@@ -47,12 +90,8 @@ class RateLimiter:
         self.in_memory_requests = defaultdict(list)
 
     async def __call__(self, request: Request):
-        # Extract client identifier: X-Forwarded-For or direct host
-        forwarded = request.headers.get("X-Forwarded-For")
-        if forwarded:
-            client_ip = forwarded.split(",")[0].strip()
-        else:
-            client_ip = request.client.host if request.client else "unknown"
+        # Safely extract client IP with proxy verification
+        client_ip = extract_client_ip(request)
 
         now = time.time()
         window_start = now - self.window_seconds

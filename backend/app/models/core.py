@@ -113,7 +113,10 @@ class Job(Base):
     result = Column(Text, nullable=True)
     error_message = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+    celery_task_id = Column(String(255), nullable=True, index=True)
+    started_at = Column(DateTime, nullable=True)
     completed_at = Column(DateTime, nullable=True)
+    processing_time_ms = Column(Integer, nullable=True)
 
 
 class DocumentChunk(Base):
@@ -124,6 +127,7 @@ class DocumentChunk(Base):
     chunk_index = Column(Integer, nullable=False)
     content = Column(Text, nullable=False)
     page_number = Column(Integer, nullable=True)
+    embedding_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
@@ -183,6 +187,8 @@ class OCRResult(Base):
     extracted_text = Column(Text, nullable=True)
     language = Column(String(20), default="en")
     confidence = Column(Integer, default=0)
+    page_count = Column(Integer, default=1)
+    page_texts = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
 
 
@@ -208,3 +214,30 @@ class PaymentTransaction(Base):
     receipt_url = Column(Text, nullable=True)
     metadata_json = Column(Text, nullable=True)
     created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class ApiKey(Base):
+    __tablename__ = "api_keys"
+
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    name = Column(String(100), nullable=False)
+    key_prefix = Column(String(16), nullable=False, index=True)  # e.g. "df_live_a1b2c3d4"
+    key_hash = Column(String(128), nullable=False)  # SHA-256 hash of the complete API key
+    rate_limit_per_min = Column(Integer, default=60)
+    is_active = Column(Boolean, default=True)
+    last_used_at = Column(DateTime, nullable=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+
+
+class WebhookEndpoint(Base):
+    __tablename__ = "webhook_endpoints"
+
+    id = Column(String(36), primary_key=True, index=True)
+    user_id = Column(String(36), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    url = Column(String(500), nullable=False)
+    secret = Column(String(64), nullable=False)  # Secret for HMAC-SHA256 signature
+    events = Column(String(255), default="job.completed,job.failed")
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc).replace(tzinfo=None))
+

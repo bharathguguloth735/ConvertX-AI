@@ -24,14 +24,18 @@ def _update_job(db, job_id: str, status: str, progress: int = 0,
     if job:
         job.status = status
         job.progress = progress
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        if status == "processing" and not job.started_at:
+            job.started_at = now
         if output_file_id:
             job.output_file_id = output_file_id
         if error_message:
             job.error_message = error_message
         if result:
-            job.result = result
+            import json
+            job.result = json.dumps(result) if isinstance(result, (dict, list)) else str(result)
         if status == "completed":
-            job.completed_at = datetime.now(timezone.utc)
+            job.completed_at = now
             if job.started_at:
                 job.processing_time_ms = int(
                     (job.completed_at - job.started_at).total_seconds() * 1000
@@ -64,20 +68,15 @@ def _create_output_file(db, user_id: str, filename: str, storage_path: str,
 @celery_app.task(bind=True, name="pdf.convert")
 def pdf_convert_task(self, job_id: str, input_path: str, user_id: str, options: dict):
     """Background task for PDF conversion operations."""
-    import asyncio
     from app.services.pdf.pdf_service import PDFService
-    from app.services.storage.storage_service import LocalStorageService, generate_storage_path
-    from app.config import settings
+    from app.services.storage.storage_service import storage, generate_storage_path
 
     db = _get_sync_db()
     try:
         _update_job(db, job_id, "processing", 10)
 
-        # Read input file
-        storage = LocalStorageService(settings.storage_local_path)
-        # Since we're in sync context, use sync read
-        with open(f"{settings.storage_local_path}/{input_path}", "rb") as f:
-            file_bytes = f.read()
+        # Read input file using storage abstraction
+        file_bytes = storage.download_sync(input_path)
 
         operation = options.get("operation", "to_docx")
         _update_job(db, job_id, "processing", 40)
@@ -104,8 +103,7 @@ def pdf_convert_task(self, job_id: str, input_path: str, user_id: str, options: 
             extra_paths = options.get("extra_file_paths", [])
             pdf_list = [file_bytes]
             for p in extra_paths:
-                with open(f"{settings.storage_local_path}/{p}", "rb") as f:
-                    pdf_list.append(f.read())
+                pdf_list.append(storage.download_sync(p))
             output_bytes = PDFService.merge_pdfs(pdf_list)
             output_ext = "pdf"
             output_mime = "application/pdf"
@@ -135,11 +133,7 @@ def pdf_convert_task(self, job_id: str, input_path: str, user_id: str, options: 
             base_name = orig_name.rsplit(".", 1)[0]
             out_filename = f"{base_name}_{operation}.{output_ext}"
             out_path = generate_storage_path(user_id, out_filename, "outputs")
-            full_out_path = f"{settings.storage_local_path}/{out_path}"
-            import os
-            os.makedirs(os.path.dirname(full_out_path), exist_ok=True)
-            with open(full_out_path, "wb") as f:
-                f.write(output_bytes)
+            storage.upload_sync(output_bytes, out_path, output_mime)
 
             output_file_id = _create_output_file(
                 db, user_id, out_filename, out_path, output_mime,

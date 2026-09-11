@@ -5,14 +5,13 @@ from app.workers.celery_app import celery_app
 def video_process_task(self, job_id: str, input_path: str, user_id: str, options: dict):
     from app.workers.pdf_tasks import _get_sync_db, _update_job, _create_output_file
     from app.services.video.video_service import VideoService
-    from app.config import settings
-    import os, uuid
+    from app.services.storage.storage_service import storage, generate_storage_path
+    import uuid
 
     db = _get_sync_db()
     try:
         _update_job(db, job_id, "processing", 10)
-        with open(f"{settings.storage_local_path}/{input_path}", "rb") as f:
-            file_bytes = f.read()
+        file_bytes = storage.download_sync(input_path)
 
         operation = options.get("operation", "cut")
         video_format = options.get("video_format", "mp4")
@@ -51,11 +50,8 @@ def video_process_task(self, job_id: str, input_path: str, user_id: str, options
             orig = options.get("original_filename", "video")
             base = orig.rsplit(".", 1)[0]
             out_filename = f"{base}_{operation}.{output_ext}"
-            out_path = f"outputs/{user_id}/{uuid.uuid4().hex}.{output_ext}"
-            full = f"{settings.storage_local_path}/{out_path}"
-            os.makedirs(os.path.dirname(full), exist_ok=True)
-            with open(full, "wb") as f:
-                f.write(output_bytes)
+            out_path = generate_storage_path(user_id, out_filename, "outputs")
+            storage.upload_sync(output_bytes, out_path, output_mime)
             output_file_id = _create_output_file(
                 db, user_id, out_filename, out_path, output_mime, len(output_bytes), operation, "video"
             )

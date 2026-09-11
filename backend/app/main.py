@@ -27,6 +27,8 @@ from app.api.ocr import router as ocr_router
 from app.api.social import router as social_router
 from app.api.payments import router as payments_router
 from app.api.stats import router as stats_router
+from app.api.batch import router as batch_router
+from app.api.developer import router as developer_router
 from app.services.social.social_service import social_service
 
 logging.basicConfig(level=logging.INFO)
@@ -100,6 +102,8 @@ app.include_router(ocr_router)
 app.include_router(social_router)
 app.include_router(payments_router)
 app.include_router(stats_router)
+app.include_router(batch_router)
+app.include_router(developer_router)
 
 # ── Static File Download Endpoint (Local Storage Fallback) ─────────────────────
 

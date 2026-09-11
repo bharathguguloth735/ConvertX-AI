@@ -13,18 +13,52 @@ import fitz
 
 from app.config import settings
 
+import shutil
+
 logger = logging.getLogger("docuflow.ocr")
+
+
+def detect_tesseract_binary() -> Optional[str]:
+    """Auto-detect Tesseract OCR executable path across Windows, Linux, and macOS."""
+    configured = getattr(settings, "tesseract_cmd", "")
+    if configured and os.path.isfile(configured):
+        return configured
+
+    # Check system PATH
+    found = shutil.which("tesseract") or shutil.which("tesseract.exe")
+    if found:
+        return found
+
+    # Standard Windows and Unix installation paths
+    candidate_paths = [
+        r"C:\Program Files\Tesseract-OCR\tesseract.exe",
+        r"C:\Program Files (x86)\Tesseract-OCR\tesseract.exe",
+        os.path.expandvars(r"%LOCALAPPDATA%\Programs\Tesseract-OCR\tesseract.exe"),
+        r"D:\Program Files\Tesseract-OCR\tesseract.exe",
+        "/usr/bin/tesseract",
+        "/usr/local/bin/tesseract",
+        "/opt/homebrew/bin/tesseract",
+    ]
+    for p in candidate_paths:
+        if p and os.path.isfile(p):
+            return p
+    return None
+
 
 try:
     import pytesseract
-    if getattr(settings, "tesseract_cmd", None) and settings.tesseract_cmd != "/usr/bin/tesseract":
+    detected_cmd = detect_tesseract_binary()
+    if detected_cmd:
+        pytesseract.pytesseract.tesseract_cmd = detected_cmd
+        logger.info(f"Tesseract OCR initialized with binary: {detected_cmd}")
+    elif getattr(settings, "tesseract_cmd", None):
         pytesseract.pytesseract.tesseract_cmd = settings.tesseract_cmd
 except ImportError:
     pytesseract = None
 
 try:
     easyocr = importlib.import_module("easyocr")
-except ImportError:
+except (ImportError, Exception):
     easyocr = None
 
 _easyocr_readers = {}
@@ -35,7 +69,7 @@ def _get_easyocr_reader(language: str):
     if not easyocr:
         try:
             easyocr = importlib.import_module("easyocr")
-        except ImportError:
+        except (ImportError, Exception):
             return None
 
     lang_map = {

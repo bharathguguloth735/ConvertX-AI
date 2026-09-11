@@ -16,13 +16,32 @@ from app.models import User, PaymentTransaction, AuditLog, SubscriptionPlan
 from app.security.dependencies import get_current_user_or_guest, get_current_user
 from app.schemas.auth import UserResponse
 
+import hmac
+import hashlib
+
 router = APIRouter(prefix="/api/payments", tags=["Payments & Billing"])
+
+from app.config import settings
 
 PLAN_PRICING = {
     "student": {"name": "Student Plan", "price": 99.0, "currency": "INR", "conversions": 100, "ai_quota": 50, "storage_gb": 5},
     "pro": {"name": "Pro Plan", "price": 499.0, "currency": "INR", "conversions": 1000, "ai_quota": 500, "storage_gb": 25},
     "business": {"name": "Business Plan", "price": 1999.0, "currency": "INR", "conversions": 999999, "ai_quota": 999999, "storage_gb": 100},
 }
+
+
+def _generate_order_token(order_id: str, plan_id: str, amount: float) -> str:
+    """Generate tamper-proof HMAC-SHA256 token for order verification."""
+    message = f"{order_id}:{plan_id}:{amount:.2f}".encode("utf-8")
+    return hmac.new(settings.app_secret_key.encode("utf-8"), message, hashlib.sha256).hexdigest()
+
+
+def _verify_order_token(order_id: str, plan_id: str, amount: float, token: str) -> bool:
+    """Verify HMAC token matches order, plan, and amount."""
+    if not token:
+        return False
+    expected = _generate_order_token(order_id, plan_id, amount)
+    return hmac.compare_digest(expected, token)
 
 
 class CreateOrderRequest(BaseModel):
@@ -40,6 +59,10 @@ class VerifyPaymentRequest(BaseModel):
     billing_name: Optional[str] = None
     billing_email: Optional[str] = None
     bank_ref: Optional[str] = None
+    order_token: Optional[str] = None
+    razorpay_order_id: Optional[str] = None
+    razorpay_payment_id: Optional[str] = None
+    razorpay_signature: Optional[str] = None
 
 
 @router.post("/create-order")
@@ -47,7 +70,7 @@ async def create_payment_order(
     data: CreateOrderRequest,
     current_user: User = Depends(get_current_user_or_guest),
 ):
-    """Generate a realistic checkout order with tax calculations."""
+    """Generate a realistic checkout order with tax calculations and signed authorization token."""
     plan_key = data.plan_id.lower()
     if plan_key not in PLAN_PRICING:
         raise HTTPException(status_code=400, detail=f"Invalid plan '{data.plan_id}'. Available: student, pro, business.")
@@ -57,9 +80,11 @@ async def create_payment_order(
     subtotal = round(total_amount / 1.18, 2)
     gst_amount = round(total_amount - subtotal, 2)
     order_id = f"DF_ORD_{int(datetime.now().timestamp())}_{uuid.uuid4().hex[:6].upper()}"
+    order_token = _generate_order_token(order_id, plan_key, total_amount)
 
     return {
         "order_id": order_id,
+        "order_token": order_token,
         "plan_id": plan_key,
         "plan_name": plan_info["name"],
         "currency": "INR",
@@ -80,12 +105,35 @@ async def verify_payment(
 ):
     """
     Verify payment authorization, upgrade user's active tier, and save transaction.
+    Enforces cryptographic signature and amount validation.
     """
     plan_key = data.plan_id.lower()
     if plan_key not in PLAN_PRICING:
         raise HTTPException(status_code=400, detail=f"Invalid plan '{data.plan_id}'")
 
     plan_info = PLAN_PRICING[plan_key]
+
+    # Verify amount matches configured plan price exactly
+    if abs(data.amount - plan_info["price"]) > 0.01:
+        raise HTTPException(status_code=400, detail=f"Payment amount ({data.amount}) does not match plan price ({plan_info['price']})")
+
+    # Cryptographic Signature Verification
+    if settings.razorpay_key_secret and data.razorpay_signature:
+        rzp_order = data.razorpay_order_id or data.order_id
+        rzp_pay = data.razorpay_payment_id or data.transaction_id
+        expected_sig = hmac.new(
+            settings.razorpay_key_secret.encode("utf-8"),
+            f"{rzp_order}|{rzp_pay}".encode("utf-8"),
+            hashlib.sha256
+        ).hexdigest()
+        if not hmac.compare_digest(expected_sig, data.razorpay_signature):
+            raise HTTPException(status_code=400, detail="Invalid payment gateway signature")
+    elif data.order_token:
+        if not _verify_order_token(data.order_id, plan_key, data.amount, data.order_token):
+            raise HTTPException(status_code=400, detail="Invalid or tampered order signature token")
+    else:
+        raise HTTPException(status_code=400, detail="Cryptographic payment verification signature required")
+
     user_id = current_user.id if current_user else str(uuid.uuid4())
 
     # Calculate tax details

@@ -19,7 +19,7 @@ import {
   ArrowLeft,
   Loader2
 } from 'lucide-react';
-import apiClient, { uploadWithProgress } from '@/api/client';
+import apiClient, { uploadWithProgress, streamSSE } from '@/api/client';
 import toast from 'react-hot-toast';
 
 interface Message {
@@ -394,7 +394,15 @@ Grand Total Paid: ₹276.44
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     };
 
-    setMessages(prev => [...prev, userMsg]);
+    const botMsgId = String(Date.now() + 1);
+    const botPlaceholderMsg: Message = {
+      id: botMsgId,
+      role: 'assistant',
+      content: '',
+      timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
+    };
+
+    setMessages(prev => [...prev, userMsg, botPlaceholderMsg]);
     setInputQuestion('');
     setIsAsking(true);
 
@@ -402,46 +410,73 @@ Grand Total Paid: ₹276.44
       messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
     }, 50);
 
+    let streamedContent = '';
+
     try {
-      if (analyzedDoc?.documentId) {
-        const { data } = await apiClient.post('/ai/ask-document', {
-          document_id: analyzedDoc.documentId,
-          question: q,
-        });
-
-        let answer = data.answer;
-        if ((!answer || answer.includes("could not find this information") || answer.includes("could not find information")) && analyzedDoc?.isSample) {
-          answer = getSampleReceiptAnswer(q);
+      if (analyzedDoc?.documentId && !analyzedDoc?.isSample) {
+        await streamSSE(
+          '/ai/ask-document/stream',
+          {
+            document_id: analyzedDoc.documentId,
+            question: q,
+          },
+          (token: string) => {
+            streamedContent += token;
+            setMessages(prev =>
+              prev.map(m => (m.id === botMsgId ? { ...m, content: streamedContent } : m))
+            );
+            messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+          },
+          () => {
+            if (!streamedContent) {
+              setMessages(prev =>
+                prev.map(m =>
+                  m.id === botMsgId
+                    ? { ...m, content: "I could not locate this in the uploaded document." }
+                    : m
+                )
+              );
+            }
+          }
+        );
+      } else {
+        // Fallback for sample: simulate token typing
+        const answer = analyzedDoc?.isSample ? getSampleReceiptAnswer(q) : `Based on the document, Order ID is LD20260724-00123 for customer Bharath G with a total amount of ₹276.44.`;
+        const words = answer.split(' ');
+        for (let i = 0; i < words.length; i++) {
+          streamedContent += words[i] + (i < words.length - 1 ? ' ' : '');
+          setMessages(prev =>
+            prev.map(m => (m.id === botMsgId ? { ...m, content: streamedContent } : m))
+          );
+          if (i % 2 === 0) {
+            await new Promise(r => setTimeout(r, 20));
+          }
         }
-
-        const botMsg: Message = {
-          id: String(Date.now() + 1),
-          role: 'assistant',
-          content: answer || "I could not locate this in the uploaded document.",
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        };
-        setMessages(prev => [...prev, botMsg]);
-      } else {
-        // Fallback for sample
-        const botMsg: Message = {
-          id: String(Date.now() + 1),
-          role: 'assistant',
-          content: analyzedDoc?.isSample ? getSampleReceiptAnswer(q) : `Based on the document, Order ID is LD20260724-00123 for customer Bharath G with a total amount of ₹276.44.`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        };
-        setMessages(prev => [...prev, botMsg]);
       }
-    } catch (err: any) {
+    } catch {
       if (analyzedDoc?.isSample) {
-        const botMsg: Message = {
-          id: String(Date.now() + 1),
-          role: 'assistant',
-          content: getSampleReceiptAnswer(q),
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        };
-        setMessages(prev => [...prev, botMsg]);
+        const sampleAnswer = getSampleReceiptAnswer(q);
+        setMessages(prev =>
+          prev.map(m => (m.id === botMsgId ? { ...m, content: sampleAnswer } : m))
+        );
       } else {
-        toast.error('Failed to get answer. Please try again.');
+        // Fallback to standard non-streaming API if SSE fails
+        try {
+          const { data } = await apiClient.post('/ai/ask-document', {
+            document_id: analyzedDoc?.documentId,
+            question: q,
+          });
+          setMessages(prev =>
+            prev.map(m =>
+              m.id === botMsgId
+                ? { ...m, content: data.answer || "I could not locate this in the uploaded document." }
+                : m
+            )
+          );
+        } catch {
+          toast.error('Failed to get answer. Please try again.');
+          setMessages(prev => prev.filter(m => m.id !== botMsgId));
+        }
       }
     } finally {
       setIsAsking(false);

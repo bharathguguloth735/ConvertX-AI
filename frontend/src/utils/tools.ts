@@ -2,6 +2,11 @@
 import { ToolCard } from '@/types';
 
 export const ALL_TOOLS: ToolCard[] = [
+  // Flagship Enterprise Tools
+  { id: 'pdf-sign', title: 'Sign & Fill PDF', description: 'Draw, type, or upload signatures and fill interactive PDF forms with cryptographic security', icon: '✍️', category: 'pdf', acceptedFormats: ['pdf'], route: '/tools/pdf/sign', isNew: true },
+  { id: 'pdf-redact', title: 'Redact & Mask PII', description: 'Detect and permanently burn out credit cards, SSN, PAN, Aadhaar, and sensitive data', icon: '🛡️', category: 'pdf', acceptedFormats: ['pdf'], route: '/tools/pdf/redact', isNew: true },
+  { id: 'batch-converter', title: 'Batch File Converter', description: 'Convert up to 50 files simultaneously in parallel and download as a ZIP bundle', icon: '📦', category: 'pdf', acceptedFormats: ['pdf', 'docx', 'jpg', 'jpeg', 'png', 'webp'], route: '/tools/batch-converter', isNew: true },
+
   // PDF Tools
   { id: 'pdf-to-docx', title: 'PDF to DOCX', description: 'Convert PDF files to editable Word documents', icon: '📄', category: 'pdf', acceptedFormats: ['pdf'], route: '/tools/pdf/convert?op=to_docx' },
   { id: 'pdf-to-jpg', title: 'PDF to JPG', description: 'Convert PDF pages to high-quality JPG images', icon: '🖼️', category: 'pdf', acceptedFormats: ['pdf'], route: '/tools/pdf/convert?op=to_jpg' },

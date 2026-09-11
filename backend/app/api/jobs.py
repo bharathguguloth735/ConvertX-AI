@@ -36,13 +36,21 @@ async def get_job_status(
         task = celery_app.AsyncResult(job.celery_task_id)
         celery_status = task.status
 
+    parsed_result = job.result
+    if isinstance(parsed_result, str) and (parsed_result.startswith("{") or parsed_result.startswith("[")):
+        try:
+            import json
+            parsed_result = json.loads(parsed_result)
+        except Exception:
+            pass
+
     return {
         "id": job.id,
         "job_type": job.job_type,
         "status": job.status,
         "progress": job.progress,
         "celery_status": celery_status,
-        "result": job.result,
+        "result": parsed_result,
         "error_message": job.error_message,
         "processing_time_ms": job.processing_time_ms,
         "created_at": job.created_at.isoformat() if job.created_at else None,

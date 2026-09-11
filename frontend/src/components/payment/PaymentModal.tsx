@@ -124,6 +124,7 @@ export const PaymentModal: React.FC<PaymentModalProps> = ({
 
       const verifyRes = await apiClient.post('/payments/verify', {
         order_id: orderData.order_id,
+        order_token: orderData.order_token,
         transaction_id: txnId,
         plan_id: plan.id,
         amount: totalAmount,

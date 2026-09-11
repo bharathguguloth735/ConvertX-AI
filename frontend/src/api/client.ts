@@ -69,6 +69,65 @@ export const uploadWithProgress = (
   });
 };
 
+// ─── Server-Sent Events (SSE) Stream Reader ──────────────────────────────────
+export async function streamSSE(
+  endpoint: string,
+  body: any,
+  onToken: (token: string) => void,
+  onDone?: (data: any) => void
+): Promise<void> {
+  const token = useAuthStore.getState().accessToken;
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+  };
+  if (token) {
+    headers['Authorization'] = `Bearer ${token}`;
+  }
+
+  const response = await fetch(`${API_BASE}${endpoint}`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    throw new Error(`SSE streaming failed with status ${response.status}`);
+  }
+
+  const reader = response.body?.getReader();
+  if (!reader) {
+    throw new Error('Response stream is not readable');
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (trimmed.startsWith('data: ')) {
+        try {
+          const parsed = JSON.parse(trimmed.slice(6));
+          if (parsed.token) {
+            onToken(parsed.token);
+          }
+          if (parsed.done && onDone) {
+            onDone(parsed);
+          }
+        } catch {
+          // Ignore partial or unparseable SSE line
+        }
+      }
+    }
+  }
+}
+
 // ─── User-Friendly Error Formatter ────────────────────────────────────────────
 export function getUserFriendlyErrorMessage(err: unknown): string {
   const response = (err as AxiosError<{ detail?: string | Array<{ msg: string }> }>)?.response;

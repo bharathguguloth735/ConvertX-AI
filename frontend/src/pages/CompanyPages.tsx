@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { Link } from 'react-router-dom';
 import {
@@ -19,8 +19,14 @@ import {
   Layers,
   Activity,
   CheckCircle2,
+  Key,
+  Trash2,
+  ShieldCheck,
+  Plus,
+  RefreshCw,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
+import apiClient from '@/api/client';
 import { SUBSCRIPTION_PLANS } from '@/utils/tools';
 import { useAuthStore } from '@/store/authStore';
 import { PaymentModal, PaymentPlan } from '@/components/payment/PaymentModal';
@@ -704,51 +710,332 @@ export const ContactPage: React.FC = () => {
   );
 };
 
-// ─── API DOCS PAGE ────────────────────────────────────────────────────────────
+// ─── API DOCS & DEVELOPER HUB PAGE ──────────────────────────────────────────
+
+interface ApiKeyItem {
+  id: string;
+  name: string;
+  key_prefix: string;
+  rate_limit_per_min: number;
+  is_active: boolean;
+  created_at: string;
+  last_used_at: string | null;
+}
 
 export const ApiDocsPage: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'curl' | 'python' | 'javascript'>('curl');
+  const { isAuthenticated } = useAuthStore();
+  const [activeTab, setActiveTab] = useState<'curl' | 'python' | 'javascript' | 'webhooks'>('curl');
+  const [activeSnippetCategory, setActiveSnippetCategory] = useState<'v1_convert' | 'batch' | 'signature' | 'redact'>('v1_convert');
 
-  const codeSnippets = {
-    curl: `# 1. Extract Invoice Data
-curl -X POST "http://localhost:8000/api/ai/extract-invoice" \\
-  -H "Authorization: Bearer <YOUR_API_TOKEN>" \\
-  -F "file=@sample_invoice.pdf"
+  // API Key Management State
+  const [apiKeys, setApiKeys] = useState<ApiKeyItem[]>([]);
+  const [isLoadingKeys, setIsLoadingKeys] = useState<boolean>(false);
+  const [newKeyName, setNewKeyName] = useState<string>('');
+  const [isCreatingKey, setIsCreatingKey] = useState<boolean>(false);
+  const [newlyCreatedKey, setNewlyCreatedKey] = useState<{ name: string; full_key: string } | null>(null);
 
-# 2. Compress PDF
-curl -X POST "http://localhost:8000/api/pdf/compress" \\
-  -F "file=@document.pdf" \\
-  -F "level=recommended" \\
-  -o "compressed.pdf"`,
+  useEffect(() => {
+    if (isAuthenticated) {
+      loadApiKeys();
+    }
+  }, [isAuthenticated]);
 
-    python: `import requests
-
-# 1. Summarize Document
-url = "http://localhost:8000/api/ai/summarize-file"
-headers = {"Authorization": "Bearer YOUR_API_TOKEN"}
-files = {"file": open("quarterly_report.pdf", "rb")}
-data = {"style": "detailed"}
-
-response = requests.post(url, headers=headers, files=files, data=data)
-print(response.json()["summary"])`,
-
-    javascript: `// 1. Ask Document Question
-const formData = new FormData();
-formData.append('file', fileInput.files[0]);
-formData.append('question', 'What is the net revenue for Q3?');
-
-const res = await fetch('http://localhost:8000/api/ai/ask-document', {
-  method: 'POST',
-  headers: { 'Authorization': 'Bearer YOUR_API_TOKEN' },
-  body: formData
-});
-const result = await res.json();
-console.log(result.answer);`,
+  const loadApiKeys = async () => {
+    setIsLoadingKeys(true);
+    try {
+      const res = await apiClient.get('/developer/api-keys');
+      setApiKeys(res.data || []);
+    } catch (err) {
+      // User might be guest or offline
+    } finally {
+      setIsLoadingKeys(false);
+    }
   };
 
+  const handleCreateKey = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newKeyName.trim()) {
+      toast.error('Please enter a descriptive name for your API key.');
+      return;
+    }
+
+    setIsCreatingKey(true);
+    try {
+      const res = await apiClient.post('/developer/api-keys', { name: newKeyName.trim() });
+      setNewlyCreatedKey({
+        name: res.data.name,
+        full_key: res.data.full_key,
+      });
+      setNewKeyName('');
+      toast.success('API key generated successfully!');
+      loadApiKeys();
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Failed to generate API key.');
+    } finally {
+      setIsCreatingKey(false);
+    }
+  };
+
+  const handleRevokeKey = async (keyId: string) => {
+    if (!confirm('Are you sure you want to revoke this API key? Any applications using it will immediately lose access.')) {
+      return;
+    }
+    try {
+      await apiClient.delete(`/developer/api-keys/${keyId}`);
+      toast.success('API key revoked.');
+      setApiKeys((prev) => prev.filter((k) => k.id !== keyId));
+    } catch (err: any) {
+      toast.error(err.response?.data?.detail || 'Failed to revoke API key.');
+    }
+  };
+
+  const codeSnippets: Record<string, Record<string, string>> = {
+    v1_convert: {
+      curl: `# 🚀 Convert PDF to DOCX using DocuFlow Developer API
+curl -X POST "http://localhost:8000/api/v1/convert" \\
+  -H "X-API-Key: df_live_your_secret_key_here" \\
+  -F "file=@financial_report.pdf" \\
+  -F "operation=pdf_to_docx" \\
+  -o "financial_report.docx"`,
+
+      python: `import requests
+
+# 🚀 Universal Convert via Python SDK
+url = "http://localhost:8000/api/v1/convert"
+headers = {"X-API-Key": "df_live_your_secret_key_here"}
+
+with open("quarterly_report.pdf", "rb") as f:
+    files = {"file": f}
+    data = {"operation": "pdf_to_docx"}
+    response = requests.post(url, headers=headers, files=files, data=data)
+
+if response.status_code == 200:
+    with open("converted.docx", "wb") as out:
+        out.write(response.content)
+    print("Document successfully converted and saved!")
+else:
+    print(f"Error {response.status_code}: {response.text}")`,
+
+      javascript: `import axios from 'axios';
+import fs from 'fs';
+import FormData from 'form-data';
+
+// 🚀 Universal Convert via Node.js
+async function convertDocument() {
+  const form = new FormData();
+  form.append('file', fs.createReadStream('contract.pdf'));
+  form.append('operation', 'pdf_to_docx');
+
+  const response = await axios.post('http://localhost:8000/api/v1/convert', form, {
+    headers: {
+      ...form.getHeaders(),
+      'X-API-Key': 'df_live_your_secret_key_here'
+    },
+    responseType: 'arraybuffer'
+  });
+
+  fs.writeFileSync('contract.docx', response.data);
+  console.log('Conversion finished!');
+}
+
+convertDocument();`,
+
+      webhooks: `# 🔒 Webhook Event Verification (HMAC-SHA256)
+# Each incoming webhook from DocuFlow includes an 'X-Signature' header:
+# X-Signature: sha256=<computed_hex_digest>
+
+import hmac
+import hashlib
+
+def verify_webhook_signature(payload_bytes, signature_header, secret):
+    expected = "sha256=" + hmac.new(secret.encode(), payload_bytes, hashlib.sha256).hexdigest()
+    return hmac.compare_digest(expected, signature_header)`
+    },
+
+    batch: {
+      curl: `# 📦 Batch Processing Engine (ZIP Archive Export)
+curl -X POST "http://localhost:8000/api/batch/convert" \\
+  -H "Authorization: Bearer YOUR_AUTH_TOKEN" \\
+  -F "files=@file1.pdf" \\
+  -F "files=@file2.pdf" \\
+  -F "operation=pdf_to_docx"`,
+
+      python: `import requests
+
+# 📦 Convert Multiple Files in Parallel
+url = "http://localhost:8000/api/batch/convert"
+headers = {"Authorization": "Bearer YOUR_AUTH_TOKEN"}
+
+files = [
+    ('files', ('doc1.pdf', open('doc1.pdf', 'rb'), 'application/pdf')),
+    ('files', ('doc2.pdf', open('doc2.pdf', 'rb'), 'application/pdf'))
+]
+data = {'operation': 'pdf_to_docx'}
+
+res = requests.post(url, headers=headers, files=files, data=data)
+data = res.json()
+print(f"Batch {data['batch_id']} completed: {data['successful_count']} files packaged.")
+print(f"ZIP Download URL: {data['zip_download_url']}")`,
+
+      javascript: `import axios from 'axios';
+import FormData from 'form-data';
+import fs from 'fs';
+
+// 📦 Bulk Batch Conversion via Node.js
+const form = new FormData();
+form.append('files', fs.createReadStream('doc1.pdf'));
+form.append('files', fs.createReadStream('doc2.pdf'));
+form.append('operation', 'pdf_to_docx');
+
+const res = await axios.post('http://localhost:8000/api/batch/convert', form, {
+  headers: {
+    ...form.getHeaders(),
+    Authorization: 'Bearer YOUR_AUTH_TOKEN'
+  }
+});
+console.log('ZIP URL:', res.data.zip_download_url);`,
+
+      webhooks: `# Webhook payload sent on batch completion:
+{
+  "event": "batch.completed",
+  "batch_id": "9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "successful_count": 15,
+  "failed_count": 0,
+  "zip_download_url": "/api/files/download/9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d",
+  "timestamp": "2026-09-11T14:30:00Z"
+}`
+    },
+
+    signature: {
+      curl: `# ✍️ Stamp Cryptographic Signature into PDF
+curl -X POST "http://localhost:8000/api/pdf/sign-and-fill" \\
+  -F "file=@agreement.pdf" \\
+  -F 'elements_json=[{"type":"signature","page":1,"x":100,"y":700,"width":150,"height":50,"data":"data:image/png;base64,..."}]' \\
+  -F "signer_name=Jane Doe" \\
+  -o "signed_agreement.pdf"`,
+
+      python: `import requests
+import json
+
+# ✍️ Sign & Fill Document Programmatically
+url = "http://localhost:8000/api/pdf/sign-and-fill"
+elements = [
+    {
+        "type": "signature",
+        "page": 1,
+        "x": 120,
+        "y": 680,
+        "width": 140,
+        "height": 45,
+        "data": "data:image/png;base64,iVBORw0KGgo..."
+    },
+    {
+        "type": "date",
+        "page": 1,
+        "x": 350,
+        "y": 695,
+        "text": "2026-09-11",
+        "font_size": 12
+    }
+]
+
+files = {"file": open("nda_template.pdf", "rb")}
+data = {"elements_json": json.dumps(elements), "signer_name": "Dr. Aris Thorne"}
+
+res = requests.post(url, files=files, data=data)
+with open("nda_certified_signed.pdf", "wb") as f:
+    f.write(res.content)
+print("Signed PDF written with cryptographic audit trail!")`,
+
+      javascript: `// ✍️ Flatten Tamper-Evident Signatures in Browser or Node
+const formData = new FormData();
+formData.append('file', pdfBlob);
+formData.append('elements_json', JSON.stringify([
+  { type: 'signature', page: 1, x: 100, y: 700, width: 150, height: 50, data: sigBase64 }
+]));
+formData.append('signer_name', 'Alex Mercer');
+
+const response = await fetch('/api/pdf/sign-and-fill', {
+  method: 'POST',
+  body: formData
+});
+const signedPdfBlob = await response.blob();`,
+
+      webhooks: `# Audit trail embedded in PDF Producer metadata:
+{
+  "certified_by": "DocuFlow AI Cryptographic Signer",
+  "document_sha256": "4b227777d4dd1fc61c6f884f48641d02b4d121d3fd328cb08b5531fcacdabf8a",
+  "signer": "Alex Mercer",
+  "timestamp": "2026-09-11T14:35:00Z"
+}`
+    },
+
+    redact: {
+      curl: `# 🛡️ 1. Scan PDF for PII Entities (Email, SSN, Credit Cards, Aadhaar)
+curl -X POST "http://localhost:8000/api/pdf/scan-pii" \\
+  -F "file=@confidential_statement.pdf"
+
+# 🛡️ 2. Apply Permanent Pixel & Vector Redactions
+curl -X POST "http://localhost:8000/api/pdf/apply-redactions" \\
+  -F "file=@confidential_statement.pdf" \\
+  -F 'redactions_json=[{"page":1,"bbox":[120,340,300,360],"category":"credit_card"}]' \\
+  -o "sanitized_statement.pdf"`,
+
+      python: `import requests
+import json
+
+# 🛡️ Automated PII Discovery & Deep Sanitization
+scan_url = "http://localhost:8000/api/pdf/scan-pii"
+files = {"file": open("customer_records.pdf", "rb")}
+scan_res = requests.post(scan_url, files=files).json()
+
+print(f"Found {scan_res['total_found']} sensitive PII instances:")
+for pii in scan_res["redactions"]:
+    print(f" - [{pii['category']}] {pii['text_preview']} on page {pii['page']}")
+
+# Apply burn-in
+apply_url = "http://localhost:8000/api/pdf/apply-redactions"
+files = {"file": open("customer_records.pdf", "rb")}
+data = {"redactions_json": json.dumps(scan_res["redactions"])}
+
+clean_pdf = requests.post(apply_url, files=files, data=data).content
+with open("customer_records_redacted.pdf", "wb") as f:
+    f.write(clean_pdf)
+print("Sanitized document saved. Glyph streams and pixels purged.")`,
+
+      javascript: `// 🛡️ Client-side trigger for PII Redaction
+const scanRes = await fetch('/api/pdf/scan-pii', { method: 'POST', body: formData });
+const { redactions } = await scanRes.json();
+
+// Confirm and burn out
+const applyForm = new FormData();
+applyForm.append('file', file);
+applyForm.append('redactions_json', JSON.stringify(redactions));
+
+const res = await fetch('/api/pdf/apply-redactions', { method: 'POST', body: applyForm });
+const sanitizedBlob = await res.blob();`,
+
+      webhooks: `# PII Scanner supports categories:
+- email (RFC 5322 regex)
+- phone (International & E.164)
+- credit_card (Visa, MC, Amex, Discover with Luhn Check)
+- ssn (US Social Security Numbers)
+- aadhaar (Indian 12-digit UIDAI format)
+- pan (Indian Income Tax Permanent Account Number)
+- ip_address (IPv4 / IPv6 addresses)`
+    }
+  };
+
+  const currentSnippet = codeSnippets[activeSnippetCategory]?.[activeTab] || '';
+
   const copyCode = () => {
-    navigator.clipboard.writeText(codeSnippets[activeTab]);
+    navigator.clipboard.writeText(currentSnippet);
     toast.success('Code snippet copied to clipboard!');
+  };
+
+  const copyApiKey = (keyText: string) => {
+    navigator.clipboard.writeText(keyText);
+    toast.success('API Key copied to clipboard!');
   };
 
   return (
@@ -758,15 +1045,15 @@ console.log(result.answer);`,
         <div className="text-center">
           <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-semibold text-cyan-300 bg-cyan-500/10 border border-cyan-500/20 mb-4 shadow-sm">
             <Terminal className="w-3.5 h-3.5 text-cyan-400" />
-            <span>Developer REST API</span>
+            <span>Developer REST API & Webhooks</span>
           </div>
           <h1 className="text-4xl sm:text-6xl font-black text-white tracking-tight mb-4">
-            DocuFlow AI <span className="gradient-text">API Reference</span>
+            DocuFlow AI <span className="gradient-text">Developer Platform</span>
           </h1>
           <p className="text-slate-400 text-base sm:text-lg max-w-2xl mx-auto leading-relaxed">
-            Programmatically convert, OCR, extract, and understand documents through our high-performance REST API.
+            Integrate enterprise-grade document conversion, digital signatures, AI extraction, and PII redaction directly into your applications with unified REST endpoints and webhooks.
           </p>
-          <div className="mt-6 flex justify-center gap-4">
+          <div className="mt-6 flex flex-wrap justify-center gap-4">
             <a
               href="http://localhost:8000/docs"
               target="_blank"
@@ -776,56 +1063,224 @@ console.log(result.answer);`,
               <span>Interactive Swagger UI</span>
               <ExternalLink className="w-4 h-4" />
             </a>
+            <a
+              href="http://localhost:8000/redoc"
+              target="_blank"
+              rel="noreferrer"
+              className="btn-secondary inline-flex items-center gap-2 text-sm py-2.5 px-5"
+            >
+              <span>ReDoc Specification</span>
+              <ExternalLink className="w-4 h-4" />
+            </a>
           </div>
         </div>
 
-        {/* Code Snippets Card */}
-        <div className="glass-card rounded-2xl p-6 border border-white/10 shadow-2xl">
-          <div className="flex items-center justify-between pb-4 border-b border-white/10">
-            <div className="flex items-center gap-2">
-              {(['curl', 'python', 'javascript'] as const).map((tab) => (
+        {/* API Key Management Portal */}
+        <div className="glass-card rounded-2xl p-6 sm:p-8 border border-white/10 shadow-2xl space-y-6">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-5">
+            <div>
+              <div className="flex items-center space-x-2">
+                <Key className="w-5 h-5 text-brand-400" />
+                <h2 className="text-xl font-bold text-white">Live API Keys</h2>
+              </div>
+              <p className="text-xs sm:text-sm text-slate-400 mt-1">
+                Pass your API key in the <code className="text-brand-300 font-mono">X-API-Key</code> request header or as a Bearer token.
+              </p>
+            </div>
+
+            {isAuthenticated && (
+              <form onSubmit={handleCreateKey} className="flex items-center gap-2">
+                <input
+                  type="text"
+                  placeholder="Key label (e.g. Production Web)"
+                  value={newKeyName}
+                  onChange={(e) => setNewKeyName(e.target.value)}
+                  className="bg-slate-900 border border-white/10 rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-brand-500 w-48 sm:w-56"
+                />
+                <button
+                  type="submit"
+                  disabled={isCreatingKey}
+                  className="btn-primary text-xs py-2 px-3 flex items-center gap-1.5 whitespace-nowrap shadow-glow"
+                >
+                  {isCreatingKey ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                  <span>Generate Key</span>
+                </button>
+              </form>
+            )}
+          </div>
+
+          {/* Newly Created Key Banner (Shown Only Once) */}
+          <AnimatePresence>
+            {newlyCreatedKey && (
+              <motion.div
+                initial={{ opacity: 0, y: -10 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                className="bg-emerald-950/40 border border-emerald-500/50 rounded-xl p-4 text-emerald-300 space-y-2 shadow-lg"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="font-semibold text-xs uppercase tracking-wider flex items-center gap-1.5">
+                    <ShieldCheck className="w-4 h-4 text-emerald-400" />
+                    New API Key Generated: {newlyCreatedKey.name}
+                  </span>
+                  <button
+                    onClick={() => setNewlyCreatedKey(null)}
+                    className="text-xs text-slate-400 hover:text-white"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+                <p className="text-xs text-emerald-200/80">
+                  ⚠️ Make sure to copy this key now. For security purposes, it will never be displayed again.
+                </p>
+                <div className="flex items-center gap-2 bg-slate-950 p-2 rounded-lg border border-emerald-500/30">
+                  <code className="font-mono text-xs text-emerald-400 flex-1 select-all break-all">
+                    {newlyCreatedKey.full_key}
+                  </code>
+                  <button
+                    onClick={() => copyApiKey(newlyCreatedKey.full_key)}
+                    className="p-1.5 rounded-md bg-emerald-500/20 hover:bg-emerald-500/30 text-emerald-300 transition"
+                    title="Copy Key"
+                  >
+                    <Copy className="w-4 h-4" />
+                  </button>
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
+
+          {/* Keys List */}
+          {!isAuthenticated ? (
+            <div className="text-center py-8 border border-dashed border-white/10 rounded-xl bg-slate-900/30">
+              <Lock className="w-8 h-8 text-slate-500 mx-auto mb-2" />
+              <p className="text-sm font-medium text-slate-300">Sign in to manage your developer credentials</p>
+              <p className="text-xs text-slate-500 max-w-sm mx-auto mt-1 mb-4">
+                Generate production API keys with up to 1,000 requests/minute and configure HMAC webhooks.
+              </p>
+              <Link to="/login" className="btn-primary text-xs py-2 px-4 inline-flex items-center gap-1.5">
+                <span>Sign In to DocuFlow</span>
+                <ArrowRight className="w-3.5 h-3.5" />
+              </Link>
+            </div>
+          ) : isLoadingKeys ? (
+            <div className="py-6 flex justify-center text-slate-400">
+              <RefreshCw className="w-5 h-5 animate-spin" />
+            </div>
+          ) : apiKeys.length === 0 ? (
+            <div className="text-center py-6 text-slate-400 text-xs">
+              No API keys created yet. Enter a label above and click "Generate Key" to get your first secret key.
+            </div>
+          ) : (
+            <div className="space-y-2.5">
+              {apiKeys.map((k) => (
+                <div
+                  key={k.id}
+                  className="flex flex-col sm:flex-row sm:items-center justify-between p-3.5 rounded-xl bg-slate-900/60 border border-white/5 gap-3"
+                >
+                  <div className="flex items-center space-x-3">
+                    <div className="p-2 rounded-lg bg-brand-500/10 text-brand-400">
+                      <Key className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <div className="flex items-center space-x-2">
+                        <span className="text-sm font-semibold text-white">{k.name}</span>
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400 border border-white/5">
+                          {k.rate_limit_per_min} req/min
+                        </span>
+                      </div>
+                      <div className="flex items-center space-x-3 text-xs text-slate-400 mt-0.5 font-mono">
+                        <span>Prefix: {k.key_prefix}</span>
+                        {k.last_used_at && (
+                          <span>• Last used: {new Date(k.last_used_at).toLocaleDateString()}</span>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-2">
+                    <button
+                      onClick={() => handleRevokeKey(k.id)}
+                      className="px-2.5 py-1.5 rounded-lg text-xs font-medium text-red-400 hover:text-red-300 bg-red-950/40 hover:bg-red-950/70 border border-red-900/50 flex items-center space-x-1.5 transition"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                      <span>Revoke</span>
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Interactive Code Snippets */}
+        <div className="glass-card rounded-2xl p-6 border border-white/10 shadow-2xl space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/10 pb-4">
+            {/* Category Selector */}
+            <div className="flex flex-wrap items-center gap-2">
+              {[
+                { id: 'v1_convert', label: 'Universal /api/v1/convert' },
+                { id: 'batch', label: 'Batch Converter' },
+                { id: 'signature', label: 'Digital Signatures' },
+                { id: 'redact', label: 'PII Redaction' },
+              ].map((cat) => (
+                <button
+                  key={cat.id}
+                  onClick={() => setActiveSnippetCategory(cat.id as any)}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition ${
+                    activeSnippetCategory === cat.id
+                      ? 'bg-white/15 text-white font-semibold'
+                      : 'text-slate-400 hover:text-white bg-transparent'
+                  }`}
+                >
+                  {cat.label}
+                </button>
+              ))}
+            </div>
+
+            {/* Language Selector */}
+            <div className="flex items-center gap-1.5">
+              {(['curl', 'python', 'javascript', 'webhooks'] as const).map((tab) => (
                 <button
                   key={tab}
                   onClick={() => setActiveTab(tab)}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-mono uppercase font-semibold transition-all ${
+                  className={`px-2.5 py-1 rounded-md text-xs font-mono uppercase font-semibold transition-all ${
                     activeTab === tab
                       ? 'bg-brand-500 text-white shadow-glow'
                       : 'bg-white/5 text-slate-400 hover:text-white'
                   }`}
                 >
-                  {tab}
+                  {tab === 'javascript' ? 'Node.js' : tab}
                 </button>
               ))}
+              <button
+                onClick={copyCode}
+                className="btn-secondary text-xs py-1 px-2.5 ml-2 flex items-center gap-1"
+                title="Copy Snippet"
+              >
+                <Copy className="w-3.5 h-3.5" />
+                <span>Copy</span>
+              </button>
             </div>
-            <button
-              onClick={copyCode}
-              className="btn-secondary text-xs py-1.5 px-3 flex items-center gap-1.5"
-            >
-              <Copy className="w-3.5 h-3.5" />
-              <span>Copy</span>
-            </button>
           </div>
 
-          <pre className="mt-4 p-4 rounded-xl bg-slate-950 font-mono text-xs sm:text-sm text-slate-200 overflow-x-auto leading-relaxed border border-white/5">
-            {codeSnippets[activeTab]}
+          <pre className="p-4 rounded-xl bg-slate-950 font-mono text-xs sm:text-sm text-slate-200 overflow-x-auto leading-relaxed border border-white/5">
+            {currentSnippet}
           </pre>
         </div>
 
-        {/* Core Endpoints List */}
+        {/* Flagship REST Endpoints List */}
         <div>
-          <h2 className="text-2xl font-black text-white mb-6">Core API Endpoints</h2>
+          <h2 className="text-2xl font-black text-white mb-6">Flagship Enterprise Endpoints</h2>
           <div className="space-y-3">
             {[
-              { method: 'POST', path: '/api/pdf/convert', desc: 'Convert between PDF, DOCX, JPG, TXT, and Markdown' },
-              { method: 'POST', path: '/api/pdf/merge', desc: 'Combine multiple PDF documents into a single file' },
-              { method: 'POST', path: '/api/pdf/compress', desc: 'Compress PDF size with customizable optimization levels' },
+              { method: 'POST', path: '/api/v1/convert', desc: 'Universal public conversion endpoint authenticated via X-API-Key header' },
+              { method: 'POST', path: '/api/batch/convert', desc: 'Convert up to 50 files in parallel and export as compressed .ZIP' },
+              { method: 'POST', path: '/api/pdf/sign-and-fill', desc: 'Embed signatures, form fields, and cryptographic SHA-256 audit stamps' },
+              { method: 'POST', path: '/api/pdf/scan-pii', desc: 'Detect credit cards, SSN, Aadhaar, PAN, emails, and phone numbers' },
+              { method: 'POST', path: '/api/pdf/apply-redactions', desc: 'Burn out PII and physically purge glyph vectors & raster pixels' },
               { method: 'POST', path: '/api/ocr/extract', desc: 'High-accuracy OCR for scanned documents, images, and invoices' },
-              { method: 'POST', path: '/api/ai/ask-document', desc: 'RAG-powered conversational QA grounded in uploaded documents' },
               { method: 'POST', path: '/api/ai/extract-invoice', desc: 'Extract structured vendor, line items, and financial metrics' },
-              { method: 'POST', path: '/api/ai/analyze-resume', desc: 'Parse resume skills, candidate experience, and education' },
-              { method: 'POST', path: '/api/ai/translate', desc: 'Multilingual neural translation across 15+ languages' },
-              { method: 'POST', path: '/api/media/audio/convert', desc: 'Convert and trim audio tracks with FFmpeg' },
-              { method: 'POST', path: '/api/social/instagram/analyze', desc: 'Analyze permitted public social media links for download' },
+              { method: 'POST', path: '/api/developer/webhooks', desc: 'Register HMAC-SHA256 signed webhooks for async completion events' },
             ].map((ep) => (
               <div
                 key={ep.path}
@@ -846,3 +1301,4 @@ console.log(result.answer);`,
     </div>
   );
 };
+
