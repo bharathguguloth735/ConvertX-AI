@@ -1,0 +1,72 @@
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+docuflow.db
+docuflow_test.db
+test.db
+
+# Storage & Uploads
+uploads/
+storage/
+storage_local/
+social_temp/
+scratch_test.*
+
+# Node / Frontend
+node_modules/
+dist/
+dist-ssr/
+*.local
+.vite/
+
+# Testing & Reports
+.pytest_cache/
+.coverage
+htmlcov/
+test-results/
+playwright-report/
+blob-report/
+
+# Logs
+*.log
+logs/
+server.stdout.log
+server.stderr.log
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

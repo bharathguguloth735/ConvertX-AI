@@ -1,0 +1,76 @@
+name: DocuFlow AI CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  backend-ci:
+    name: Backend Test Suite & Security Checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: "backend/requirements.txt"
+
+      - name: Install System Dependencies (FFmpeg & Tesseract OCR)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg libsm6 libxext6 tesseract-ocr tesseract-ocr-eng
+
+      - name: Install Python Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r backend/requirements.txt
+
+      - name: Run Backend Pytest Suite
+        env:
+          APP_ENV: testing
+          DATABASE_URL: sqlite+aiosqlite:///./test.db
+          SYNC_DATABASE_URL: sqlite:///./test.db
+          APP_SECRET_KEY: ci-secret-key-32-characters-minimum
+          JWT_SECRET: ci-jwt-secret-testing-key-value
+        run: |
+          cd backend
+          pytest -v --tb=short
+
+  frontend-ci:
+    name: Frontend Unit Tests & Bundle Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+          cache-dependency-path: "frontend/package.json"
+
+      - name: Install Frontend Dependencies
+        run: |
+          cd frontend
+          npm install
+
+      - name: Run Vitest Unit Tests
+        run: |
+          cd frontend
+          npm test
+
+      - name: Validate Production Build & Code Splitting
+        run: |
+          cd frontend
+          npm run build
