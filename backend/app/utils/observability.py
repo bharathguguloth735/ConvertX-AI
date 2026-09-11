@@ -118,9 +118,13 @@ def setup_sentry(app):
         return
 
     try:
-        import sentry_sdk
-        from sentry_sdk.integrations.fastapi import FastApiIntegration
-        from sentry_sdk.integrations.sqlalchemy import SqlalchemyIntegration
+        import importlib
+
+        sentry_sdk = importlib.import_module("sentry_sdk")
+        fastapi_mod = importlib.import_module("sentry_sdk.integrations.fastapi")
+        sqlalchemy_mod = importlib.import_module("sentry_sdk.integrations.sqlalchemy")
+        FastApiIntegration = getattr(fastapi_mod, "FastApiIntegration")
+        SqlalchemyIntegration = getattr(sqlalchemy_mod, "SqlalchemyIntegration")
 
         sentry_sdk.init(
             dsn=settings.sentry_dsn,
@@ -134,5 +138,5 @@ def setup_sentry(app):
             ],
         )
         logger.info("Sentry APM & Error Monitoring initialized.")
-    except ImportError:
+    except (ImportError, ModuleNotFoundError):
         logger.warning("sentry-sdk not installed; skipping Sentry telemetry initialization.")
