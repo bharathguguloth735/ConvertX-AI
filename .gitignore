@@ -38,8 +38,10 @@ docuflow_test.db
 test.db
 
 # Storage & Uploads
-uploads/
-storage/
+/uploads/
+backend/uploads/
+/storage/
+backend/storage/
 storage_local/
 social_temp/
 scratch_test.*
