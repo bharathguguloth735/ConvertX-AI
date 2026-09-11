@@ -23,10 +23,10 @@ jobs:
           cache: "pip"
           cache-dependency-path: "backend/requirements.txt"
 
-      - name: Install System Dependencies (FFmpeg & Tesseract OCR)
+      - name: Install System Dependencies (FFmpeg, libmagic & Tesseract OCR)
         run: |
           sudo apt-get update
-          sudo apt-get install -y ffmpeg libsm6 libxext6 tesseract-ocr tesseract-ocr-eng
+          sudo apt-get install -y ffmpeg libsm6 libxext6 libmagic1 tesseract-ocr tesseract-ocr-eng
 
       - name: Install Python Dependencies
         run: |
@@ -34,6 +34,7 @@ jobs:
           pip install -r backend/requirements.txt
 
       - name: Run Backend Pytest Suite
+        working-directory: backend
         env:
           PYTHONPATH: .
           APP_ENV: testing
@@ -41,9 +42,7 @@ jobs:
           SYNC_DATABASE_URL: sqlite:///./test.db
           APP_SECRET_KEY: ci-secret-key-32-characters-minimum
           JWT_SECRET: ci-jwt-secret-testing-key-value
-        run: |
-          cd backend
-          python -m pytest -v --tb=short
+        run: python -m pytest -v --tb=short
 
   frontend-ci:
     name: Frontend Unit Tests & Bundle Verification
